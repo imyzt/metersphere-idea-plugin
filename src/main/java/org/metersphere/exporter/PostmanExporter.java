@@ -28,6 +28,8 @@ import org.metersphere.model.PostmanModel;
 import org.metersphere.model.PostmanModel.ItemBean.RequestBean.BodyBean.FormDataBean;
 import org.metersphere.state.AppSettingState;
 import org.metersphere.utils.CollectionUtils;
+import org.metersphere.utils.PsiClassUtil;
+import org.metersphere.utils.PsiTypeUtil;
 import org.metersphere.utils.ProgressUtil;
 import org.metersphere.utils.UTF8Util;
 
@@ -62,7 +64,7 @@ public class PostmanExporter implements IExporter {
                 Messages.showInfoMessage("No java file detected! please change your search root", infoTitle());
                 return false;
             }
-            List<PostmanModel> postmanModels = transform(files, true, appSettingService.getState());
+            List<PostmanModel> postmanModels = transform(files, true, appSettingService.getState(), null);
             if (postmanModels.size() == 0) {
                 Messages.showInfoMessage("No java api was found! please change your search root", infoTitle());
                 return false;
@@ -125,7 +127,10 @@ public class PostmanExporter implements IExporter {
 
     Logger logger = Logger.getInstance(PostmanExporter.class);
 
-    public List<PostmanModel> transform(List<PsiJavaFile> files, boolean withBasePath, AppSettingState state) {
+    public List<PostmanModel> transform(List<PsiJavaFile> files, boolean withBasePath, AppSettingState state, String msContextPath) {
+
+        String contextPath = StringUtils.defaultString(msContextPath, state.getContextPath());
+
         List<PostmanModel> models = new LinkedList<>();
         files.forEach(f -> {
             logger.info(f.getText() + "...........");
@@ -170,11 +175,11 @@ public class PostmanExporter implements IExporter {
                             basePath = "";
                         }
                     }
-                    if (StringUtils.isNotBlank(state.getContextPath())) {
+                    if (StringUtils.isNotBlank(contextPath)) {
                         if (StringUtils.isNotBlank(basePath))
-                            basePath = state.getContextPath().replaceFirst("/", "") + "/" + basePath;
+                            basePath = contextPath.replaceFirst("/", "") + "/" + basePath;
                         else
-                            basePath = state.getContextPath().replaceFirst("/", "");
+                            basePath = contextPath.replaceFirst("/", "");
                     }
 
                     Collection<PsiMethod> methodCollection = PsiTreeUtil.findChildrenOfType(controllerClass, PsiMethod.class);
@@ -209,7 +214,7 @@ public class PostmanExporter implements IExporter {
 
                             String rawPre = (StringUtils.isNotBlank(basePath) ? "/" + basePath : "");
                             if (withBasePath) {
-                                String cp = StringUtils.isNotBlank(state.getContextPath()) ? "{{" + e1.getProject().getName() + "}}" + "/" + state.getContextPath() : "{{" + e1.getProject().getName() + "}}";
+                                String cp = StringUtils.isNotBlank(contextPath) ? "{{" + e1.getProject().getName() + "}}" + "/" + contextPath : "{{" + e1.getProject().getName() + "}}";
                                 urlBean.setRaw(cp + rawPre + (urlStr.startsWith("/") ? urlStr : "/" + urlStr));
                             } else {
                                 urlBean.setRaw(rawPre + (urlStr.startsWith("/") ? urlStr : "/" + urlStr));
@@ -895,6 +900,10 @@ public class PostmanExporter implements IExporter {
                 return getJSONArray(pe, curDeepth, maxDeepth).toJSONString();
             else if (isMap(pe)) {
                 getRawMap(param, pe);
+            } else if (pe.getType().getCanonicalText().contains("cn.ideamake.common.response.Result")) {
+                Map<String, PsiType> stringPsiTypeMap = PsiTypeUtil.parseGenericNameAndSubstitutorTypeMapping(pe.getType());
+                param = (LinkedHashMap)PsiClassUtil.mockJson(pe.getType(), stringPsiTypeMap, true);
+                System.out.println(param);
             }
 
         }
