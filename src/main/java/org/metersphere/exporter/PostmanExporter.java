@@ -70,7 +70,7 @@ public class PostmanExporter implements IExporter {
                 Messages.showInfoMessage("No java file detected! please change your search root", infoTitle());
                 return false;
             }
-            List<PostmanModel> postmanModels = transform(files, true, false, appSettingService.getState());
+            List<PostmanModel> postmanModels = transform(files, true, false, appSettingService.getState(), appSettingService.getState().getContextPath());
             if (postmanModels.size() == 0) {
                 Messages.showInfoMessage("No java api was found! please change your search root", infoTitle());
                 return false;
@@ -133,7 +133,7 @@ public class PostmanExporter implements IExporter {
 
     Logger logger = Logger.getInstance(PostmanExporter.class);
 
-    public List<PostmanModel> transform(List<PsiJavaFile> files, boolean withBasePath, boolean withJsonSchema, AppSettingState state) {
+    public List<PostmanModel> transform(List<PsiJavaFile> files, boolean withBasePath, boolean withJsonSchema, AppSettingState state, String contextPath) {
         List<PostmanModel> models = new LinkedList<>();
         files.forEach(f -> {
             logger.info(f.getText() + "...........");
@@ -178,11 +178,11 @@ public class PostmanExporter implements IExporter {
                             basePath = "";
                         }
                     }
-                    if (StringUtils.isNotBlank(state.getContextPath())) {
+                    if (StringUtils.isNotBlank(contextPath)) {
                         if (StringUtils.isNotBlank(basePath))
-                            basePath = state.getContextPath().replaceFirst("/", "") + "/" + basePath;
+                            basePath = contextPath.replaceFirst("/", "") + "/" + basePath;
                         else
-                            basePath = state.getContextPath().replaceFirst("/", "");
+                            basePath = contextPath.replaceFirst("/", "");
                     }
 
                     Collection<PsiMethod> methodCollection = PsiTreeUtil.findChildrenOfType(controllerClass, PsiMethod.class);
@@ -217,7 +217,7 @@ public class PostmanExporter implements IExporter {
 
                             String rawPre = (StringUtils.isNotBlank(basePath) ? "/" + basePath : "");
                             if (withBasePath) {
-                                String cp = StringUtils.isNotBlank(state.getContextPath()) ? "{{" + e1.getProject().getName() + "}}" + "/" + state.getContextPath() : "{{" + e1.getProject().getName() + "}}";
+                                String cp = StringUtils.isNotBlank(contextPath) ? "{{" + e1.getProject().getName() + "}}" + "/" + contextPath : "{{" + e1.getProject().getName() + "}}";
                                 urlBean.setRaw(cp + rawPre + (urlStr.startsWith("/") ? urlStr : "/" + urlStr));
                             } else {
                                 urlBean.setRaw(rawPre + (urlStr.startsWith("/") ? urlStr : "/" + urlStr));

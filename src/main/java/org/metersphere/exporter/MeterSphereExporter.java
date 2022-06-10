@@ -1,11 +1,20 @@
 package org.metersphere.exporter;
 
 import com.alibaba.fastjson.JSONObject;
+import com.google.common.base.Strings;
 import com.google.gson.Gson;
+import com.intellij.notification.Notification;
+import com.intellij.notification.NotificationDisplayType;
+import com.intellij.notification.NotificationGroup;
+import com.intellij.notification.NotificationType;
+import com.intellij.notification.Notifications;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.project.Project;
 import com.intellij.psi.PsiElement;
+import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiJavaFile;
-import org.apache.commons.lang3.StringUtils;
+import com.intellij.psi.impl.source.PsiClassImpl;
+import com.intellij.psi.javadoc.PsiDocTag;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpStatus;
 import org.apache.http.StatusLine;
@@ -31,6 +40,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
@@ -40,6 +50,12 @@ public class MeterSphereExporter implements IExporter {
     private Logger logger = Logger.getInstance(MeterSphereExporter.class);
     private final PostmanExporter postmanExporter = new PostmanExporter();
     private final AppSettingService appSettingService = AppSettingService.getInstance();
+
+    private static NotificationGroup notificationGroup;
+
+    static {
+        notificationGroup = new NotificationGroup("MsExport.NotificationGroup", NotificationDisplayType.BALLOON, true);
+    }
 
     @Override
     public boolean export(PsiElement psiElement) throws IOException {
@@ -54,7 +70,11 @@ public class MeterSphereExporter implements IExporter {
         if (files.size() == 0) {
             throw new RuntimeException(PluginConstants.EXCEPTIONCODEMAP.get(2));
         }
-        List<PostmanModel> postmanModels = postmanExporter.transform(files, false, true, appSettingService.getState());
+
+        AppSettingState state = appSettingService.getState();
+        JSONObject param = buildParam(state, psiElement);
+        String msContextPath = param.getString("msContextPath");
+        List<PostmanModel> postmanModels = postmanExporter.transform(files, false, true, appSettingService.getState(), msContextPath);
         if (postmanModels.size() == 0) {
             throw new RuntimeException(PluginConstants.EXCEPTIONCODEMAP.get(3));
         }
@@ -65,7 +85,12 @@ public class MeterSphereExporter implements IExporter {
         JSONObject info = new JSONObject();
         info.put("schema", "https://schema.getpostman.com/json/collection/v2.1.0/collection.json");
         String dateTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        String exportName = StringUtils.isNotBlank(appSettingService.getState().getExportModuleName()) ? appSettingService.getState().getExportModuleName() : psiElement.getProject().getName();
+
+        // 此处首先选择@menu, 然后取配置名称
+        String exportName = Arrays.stream(((PsiClassImpl) psiElement.getChildren()[4]).getDocComment().getTags())
+                .filter(d -> d.getName().contains("menu")).map(PsiDocTag::getValueElement).map(PsiElement::getText)
+                .findFirst().orElse(appSettingService.getState().getExportModuleName());
+
         info.put("name", exportName);
         info.put("description", "exported at " + dateTime);
         jsonObject.put("info", info);
@@ -73,7 +98,7 @@ public class MeterSphereExporter implements IExporter {
         bufferedWriter.flush();
         bufferedWriter.close();
 
-        boolean r = uploadToServer(temp);
+        boolean r = uploadToServer(temp, param);
         if (r) {
             ProgressUtil.show(("Export to MeterSphere success!"));
         } else {
@@ -85,10 +110,9 @@ public class MeterSphereExporter implements IExporter {
         return r;
     }
 
-    private boolean uploadToServer(File file) {
+    private boolean uploadToServer(File file, JSONObject param) {
         ProgressUtil.show((String.format("Start to sync to MeterSphere Server")));
         CloseableHttpClient httpclient = HttpFutureUtils.getOneHttpClient();
-
         AppSettingState state = appSettingService.getState();
         String url = state.getMeterSphereAddress() + "/api/definition/import";
         HttpPost httpPost = new HttpPost(url);// 创建httpPost
@@ -96,7 +120,8 @@ public class MeterSphereExporter implements IExporter {
         httpPost.setHeader("accesskey", appSettingService.getState().getAccesskey());
         httpPost.setHeader("signature", MSApiUtil.getSinature(appSettingService.getState()));
         CloseableHttpResponse response = null;
-        JSONObject param = buildParam(state);
+
+
         HttpEntity formEntity = MultipartEntityBuilder.create().addBinaryBody("file", file, ContentType.APPLICATION_JSON, null)
                 .addBinaryBody("request", param.toJSONString().getBytes(StandardCharsets.UTF_8), ContentType.APPLICATION_JSON, null).build();
 
@@ -130,16 +155,56 @@ public class MeterSphereExporter implements IExporter {
     }
 
     @NotNull
-    private JSONObject buildParam(AppSettingState state) {
+    private JSONObject buildParam(AppSettingState state, PsiElement psiElement) {
         JSONObject param = new JSONObject();
         param.put("modeId", MSApiUtil.getModeId(state.getModeId()));
         if (state.getModule() == null) {
             throw new RuntimeException("no module selected ! please check your rights");
         }
-        param.put("moduleId", state.getModule().getId());
+
+        Project project = psiElement.getProject();
+        PsiFile psiFile = psiElement.getContainingFile();
+
+        String msProjectId = null;
+        String msModuleId = null;
+        String msContextPath = null;
+        // 获取配置
+        try {
+            String projectConfig = new String(project.getProjectFile().contentsToByteArray(), "utf-8");
+            String[] modules = projectConfig.split("moduleList\">");
+            if (modules.length > 1) {
+                String[] moduleList = modules[1].split("</")[0].split(",");
+                String virtualFile = psiFile.getVirtualFile().getPath();
+                for (int i = 0; i < moduleList.length; i++) {
+                    if (virtualFile.contains(moduleList[i])) {
+                        msProjectId = projectConfig.split(moduleList[i] + "\\.msProjectId\">")[1].split("</")[0];
+                        msModuleId = projectConfig.split(moduleList[i] + "\\.msModuleId\">")[1].split("</")[0];
+                        msContextPath = projectConfig.split(moduleList[i] + "\\.msContextPath\">")[1].split("</")[0];
+                        break;
+                    }
+                }
+            } else {
+                msProjectId = projectConfig.split("msProjectId\">")[1].split("</")[0];
+                msModuleId = projectConfig.split("msModuleId\">")[1].split("</")[0];
+                msContextPath = projectConfig.split("msContextPath\">")[1].split("</")[0];
+            }
+        } catch (Exception e2) {
+            Notification error = notificationGroup.createNotification("get config error:" + e2.getMessage(), NotificationType.ERROR);
+            Notifications.Bus.notify(error, project);
+            throw new RuntimeException("get config error:" + e2.getMessage());
+        }
+        // 配置校验
+        if (Strings.isNullOrEmpty(msProjectId) || Strings.isNullOrEmpty(msModuleId) || Strings.isNullOrEmpty(msContextPath)) {
+            Notification error = notificationGroup.createNotification("please check config,[projectToken,projectId,yapiUrl,projectType]", NotificationType.ERROR);
+            Notifications.Bus.notify(error, project);
+            throw new RuntimeException("please check config,[projectToken,projectId,yapiUrl,projectType]");
+        }
+
+        param.put("moduleId", msModuleId);
         param.put("platform", "Postman");
         param.put("model", "definition");
-        param.put("projectId", state.getProject().getId());
+        param.put("projectId", msProjectId);
+        param.put("msContextPath", msContextPath);
         if (state.getProjectVersion() != null && state.isSupportVersion()) {
             param.put("versionId", state.getProjectVersion().getId());
         }
